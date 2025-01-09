@@ -35,7 +35,7 @@ def get_args():
     parser.add_argument("--seed", type=int, default=42, help="Seed for the random number generator")
     parser.add_argument("--path", type=str, default="model.pt", help="Path to save the model")
 
-    parser.add_argument("--num_episodes", type=int, default=2, help="Number of episodes to train the model")
+    parser.add_argument("--num_episodes", type=int, default=10, help="Number of episodes to train the model")
 
     args = parser.parse_args()
 
@@ -96,7 +96,7 @@ def optimize_model(memory, agent, optimizer, device, args):
     torch.nn.utils.clip_grad_value_(policy_net.parameters(), 100)
     optimizer.step()
 
-    print(f"Loss: {loss.item()}")
+    print(f"Loss: {loss.item()}", end="\r")
 
 def main(args):
     print('Hello World!')
@@ -135,14 +135,19 @@ def main(args):
         # Initialize the environment and get its state
         state, info = env.reset()
         state = torch.tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
+
+        rewards = []
         for t in count():
             agent.set_epslion(args.eps_end + (args.eps_start - args.eps_end) * math.exp(-1. * steps_done / args.eps_decay))
+            print(agent.epsilon, end='\r')
             action = agent.act(state)
             steps_done += 1
 
             observation, reward, terminated, truncated, _ = env.step(action.item())
             reward = torch.tensor([reward], device=device)
             done = terminated or truncated
+
+            rewards.append(reward)
 
             if terminated:
                 next_state = None
@@ -170,8 +175,12 @@ def main(args):
                 # episode_durations.append(t + 1)
                 # plot_durations()
                 break
+        
+        print(sum(rewards)/len(rewards))
+
 
     print('Complete')
+    agent.save(args.path)
 
 if __name__ == "__main__":
     args = get_args()
