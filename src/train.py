@@ -27,7 +27,7 @@ class ProjectAgent: #For Q-learning
             return torch.tensor([[env.action_space.sample()]], device=device, dtype=torch.long)
 
     def save(self, path):
-        torch.save(self.policy_net.state_dict(), path)
+        torch.save(self.policy_net.state_dict(), path, map_location=torch.device('cpu'))
 
     def load(self):
         path = 'model.pt'
