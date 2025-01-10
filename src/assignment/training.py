@@ -5,6 +5,8 @@ import torch.optim as optim
 import torch.nn as nn
 import random
 
+import wandb
+
 from collections import namedtuple
 from itertools import count
 
@@ -13,6 +15,8 @@ import os
 
 # Add the directory containing env_hiv.py to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from gymnasium.wrappers import TimeLimit
 from env_hiv import HIVPatient
@@ -24,18 +28,32 @@ from DQN_model import DQN
 
 def get_args():
     parser = argparse.ArgumentParser(description="Hyperparameters for training the model.")
-    parser.add_argument("--batch_size", type=int, default=128, help="Batch size for training")
+
+    parser.add_argument("--domain_randomization", type=bool, default=False, help="Use domain randomization for the environment")
+
+    parser.add_argument("--batch_size", type=int, default=1028, help="Batch size for training")
     parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor for the reward")
-    parser.add_argument("--eps_start", type=float, default=0.9, help="Starting value of epsilon for exploration")
+    parser.add_argument("--num_episodes", type=int, default=100, help="Number of episodes to train the model")
+    parser.add_argument("--memory_budget", type=int, default=50000, help="Size of the replay memory")
+
+    parser.add_argument("--eps_start", type=float, default=1.0, help="Starting value of epsilon for exploration")
     parser.add_argument("--eps_end", type=float, default=0.05, help="Ending value of epsilon for exploration")
-    parser.add_argument("--eps_decay", type=int, default=1000, help="Decay rate of epsilon for exploration")
+    parser.add_argument("--eps_decay", type=int, default=10000, help="Decay rate of epsilon for exploration") # exponential decay
+
+    parser.add_argument("--target_update", type=int, default=500, help="Update the target network every n steps")
+    parser.add_argument("--soft_update", type=bool, default=False, help="Use soft update for the target network")
     parser.add_argument("--tau", type=float, default=0.005, help="Soft update of target parameters")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate for the optimizer")
+
+    parser.add_argument("--n_layers", type=int, default=5, help="Number of layers in the neural network")
+    parser.add_argument("--hidden_size", type=int, default=256, help="Number of hidden units in the neural network")
+
+    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate for the optimizer")
+
+    parser.add_argument("--loss", type=str, default="SmoothL1Loss", help="Loss function to use for training")
+    parser.add_argument("--grad_clip", type=float, default=1000, help="Gradient clipping value")
 
     parser.add_argument("--seed", type=int, default=42, help="Seed for the random number generator")
     parser.add_argument("--path", type=str, default="model.pt", help="Path to save the model")
-
-    parser.add_argument("--num_episodes", type=int, default=10, help="Number of episodes to train the model")
 
     args = parser.parse_args()
 
@@ -86,27 +104,39 @@ def optimize_model(memory, agent, optimizer, device, args):
     expected_state_action_values = (next_state_values * args.gamma) + reward_batch
 
     # Compute Huber loss
-    criterion = nn.SmoothL1Loss()
+    if args.loss == "SmoothL1Loss":
+        criterion = nn.SmoothL1Loss()
+    elif args.loss == "MSELoss":
+        criterion = nn.MSELoss()
+
     loss = criterion(state_action_values, expected_state_action_values.unsqueeze(1))
 
     # Optimize the model
     optimizer.zero_grad()
     loss.backward()
+
+    gradient_norm = nn.utils.clip_grad_norm_(policy_net.parameters(), args.grad_clip)
+    wandb.log({"grad_norm": gradient_norm.item()})
+
     # In-place gradient clipping
-    torch.nn.utils.clip_grad_value_(policy_net.parameters(), 100)
+    torch.nn.utils.clip_grad_value_(policy_net.parameters(), args.grad_clip)
     optimizer.step()
 
-    print(f"Loss: {loss.item()}", end="\r")
+    wandb.log({"loss": loss.item()})
+
 
 def main(args):
     print('Hello World!')
     args = get_args()
 
+    wandb.init(project="RL-HIV-Training", config=args)
+    
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     #Set gymnasium like HIV environment
     env = TimeLimit(
-        env=HIVPatient(domain_randomization=False), max_episode_steps=200
+        env=HIVPatient(domain_randomization=args.domain_randomization), max_episode_steps=200
     )  # The time wrapper limits the number of steps in an episode at 200.
 
     #Init policy and target networks
@@ -119,8 +149,9 @@ def main(args):
     target_net.load_state_dict(policy_net.state_dict())
 
     #Init replay buffer and optimizer
-    memory = ReplayMemory(10000)
+    memory = ReplayMemory(args.memory_budget)
     optimizer = optim.AdamW(policy_net.parameters(), lr=args.lr)
+    scheduler = CosineAnnealingLR(optimizer, T_max=args.num_episodes, eta_min=1e-5)
 
     #Init agent
     agent = ProjectAgent()
@@ -139,7 +170,6 @@ def main(args):
         rewards = []
         for t in count():
             agent.set_epslion(args.eps_end + (args.eps_start - args.eps_end) * math.exp(-1. * steps_done / args.eps_decay))
-            print(agent.epsilon, end='\r')
             action = agent.act(state)
             steps_done += 1
 
@@ -167,8 +197,13 @@ def main(args):
             # θ′ ← τ θ + (1 −τ )θ′
             target_net_state_dict = target_net.state_dict()
             policy_net_state_dict = policy_net.state_dict()
+
             for key in policy_net_state_dict:
-                target_net_state_dict[key] = policy_net_state_dict[key]*args.tau + target_net_state_dict[key]*(1-args.tau)
+                if args.soft_update:
+                    target_net_state_dict[key] = policy_net_state_dict[key]*args.tau + target_net_state_dict[key]*(1-args.tau)
+                else :
+                    if steps_done % args.target_update == 0:
+                        target_net_state_dict[key] = policy_net_state_dict[key]
             target_net.load_state_dict(target_net_state_dict)
 
             if done:
@@ -176,11 +211,17 @@ def main(args):
                 # plot_durations()
                 break
         
-        print(sum(rewards)/len(rewards))
+        scheduler.step()
+        wandb.log({"learning_rate": scheduler.get_last_lr()[0], "episode": i_episode})
 
+        average_reward = sum(rewards)/len(rewards)
+        wandb.log({"average_reward": average_reward, "episode": i_episode})
 
-    print('Complete')
+        wandb.log({"epsilon": agent.epsilon, "episode": i_episode})
+
+    print('Training Completed!')
     agent.save(args.path)
+    print('Model saved at:', args.path)
 
 if __name__ == "__main__":
     args = get_args()
