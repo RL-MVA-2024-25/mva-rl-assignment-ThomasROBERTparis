@@ -127,3 +127,5 @@ dmypy.json
 
 # Score file for grading
 score.txt
+
+/wandb
