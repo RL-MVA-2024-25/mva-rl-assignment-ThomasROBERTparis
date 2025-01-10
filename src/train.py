@@ -10,16 +10,19 @@ import random
 import torch
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+from assignment.DQN_model import DQN
+
 # You have to implement your own agent.
 # Don't modify the methods names and signatures, but you can add methods.
 # ENJOY!
 
 class ProjectAgent: #For Q-learning
     def act(self, observation, use_random=False):
+        observation = torch.tensor(observation, dtype=torch.float32, device=device).unsqueeze(0)
         sample = random.random()
         if sample > self.epsilon :
             with torch.no_grad():
-                return self.policy_net(observation).max(1).indices.view(1, 1)
+                return torch.tensor(self.policy_net(observation).max(1).indices.view(1, 1))
         else:
             return torch.tensor([[env.action_space.sample()]], device=device, dtype=torch.long)
 
@@ -27,7 +30,8 @@ class ProjectAgent: #For Q-learning
         torch.save(self.policy_net.state_dict(), path)
 
     def load(self):
-        path = 'model.pt'
+        path = 'assignment/model.pt'
+        self.policy_net = DQN().to(device)
         self.policy_net.load_state_dict(torch.load(path))
         self.epsilon = 0.01
     
