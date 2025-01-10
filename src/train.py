@@ -32,7 +32,7 @@ class ProjectAgent: #For Q-learning
     def load(self):
         path = 'model.pt'
         self.policy_net = DQN().to(device)
-        self.policy_net.load_state_dict(torch.load(path), map_location=torch.device('cpu'))
+        self.policy_net.load_state_dict(torch.load(path, map_location=torch.device('cpu')), map_location=torch.device('cpu'))
         self.epsilon = 0.01
     
     ### custom methods ###
