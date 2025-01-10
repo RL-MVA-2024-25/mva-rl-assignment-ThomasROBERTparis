@@ -30,7 +30,7 @@ class ProjectAgent: #For Q-learning
         torch.save(self.policy_net.state_dict(), path)
 
     def load(self):
-        path = 'assignment/model.pt'
+        path = 'model.pt'
         self.policy_net = DQN().to(device)
         self.policy_net.load_state_dict(torch.load(path))
         self.epsilon = 0.01
