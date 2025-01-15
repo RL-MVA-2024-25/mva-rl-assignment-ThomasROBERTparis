@@ -5,6 +5,10 @@ import torch.optim as optim
 import torch.nn as nn
 import random
 
+import numpy as np
+
+from evaluate import evaluate_HIV, evaluate_HIV_population
+
 import wandb
 
 from collections import namedtuple
@@ -16,7 +20,7 @@ import os
 # Add the directory containing env_hiv.py to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR
 
 from gymnasium.wrappers import TimeLimit
 from env_hiv import HIVPatient
@@ -29,31 +33,33 @@ from DQN_model import DQN
 def get_args():
     parser = argparse.ArgumentParser(description="Hyperparameters for training the model.")
 
-    parser.add_argument("--domain_randomization", type=bool, default=False, help="Use domain randomization for the environment")
+    parser.add_argument("--domain_randomization", type=bool, default=True, help="Use domain randomization for the environment")
 
     parser.add_argument("--batch_size", type=int, default=1028, help="Batch size for training")
-    parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor for the reward")
-    parser.add_argument("--num_episodes", type=int, default=100, help="Number of episodes to train the model")
+    parser.add_argument("--gamma", type=float, default=0.85, help="Discount factor for the reward")
+    parser.add_argument("--num_episodes", type=int, default=500, help="Number of episodes to train the model")
     parser.add_argument("--memory_budget", type=int, default=50000, help="Size of the replay memory")
 
     parser.add_argument("--eps_start", type=float, default=1.0, help="Starting value of epsilon for exploration")
-    parser.add_argument("--eps_end", type=float, default=0.05, help="Ending value of epsilon for exploration")
-    parser.add_argument("--eps_decay", type=int, default=10000, help="Decay rate of epsilon for exploration") # exponential decay
+    parser.add_argument("--eps_end", type=float, default=0.01, help="Ending value of epsilon for exploration")
+    parser.add_argument("--eps_decay", type=int, default=0.9965, help="Decay rate of epsilon for exploration") # exponential decay
 
-    parser.add_argument("--target_update", type=int, default=500, help="Update the target network every n steps")
+    parser.add_argument("--target_update", type=int, default=1000, help="Update the target network every n steps")
     parser.add_argument("--soft_update", type=bool, default=False, help="Use soft update for the target network")
     parser.add_argument("--tau", type=float, default=0.005, help="Soft update of target parameters")
 
     parser.add_argument("--n_layers", type=int, default=5, help="Number of layers in the neural network")
-    parser.add_argument("--hidden_size", type=int, default=256, help="Number of hidden units in the neural network")
+    parser.add_argument("--hidden_size", type=int, default=512, help="Number of hidden units in the neural network")
 
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate for the optimizer")
+    parser.add_argument("--scheduler", type=str, default='StepLR', help="Learning rate scheduler to use")
 
-    parser.add_argument("--loss", type=str, default="SmoothL1Loss", help="Loss function to use for training")
-    parser.add_argument("--grad_clip", type=float, default=1000, help="Gradient clipping value")
+    parser.add_argument("--loss", type=str, default="MSELoss", help="Loss function to use for training")
+    parser.add_argument("--grad_clip", type=float, default=1.0, help="Gradient clipping value")
 
     parser.add_argument("--seed", type=int, default=42, help="Seed for the random number generator")
     parser.add_argument("--path", type=str, default="model.pt", help="Path to save the model")
+    parser.add_argument("--path_best", type=str, default="model_best.pt", help="Path to save the best model")
 
     args = parser.parse_args()
 
@@ -124,13 +130,78 @@ def optimize_model(memory, agent, optimizer, device, args):
 
     wandb.log({"loss": loss.item()})
 
+def evaluate_model(agent, i_episode):
+
+    epsilon = agent.epsilon
+    agent.set_epslion(0.0)
+
+    # # Save the current random states
+    # random_state = random.getstate()
+    # np_random_state = np.random.get_state()
+    # torch_random_state = torch.get_rng_state()
+    # if torch.cuda.is_available():
+    #     torch_cuda_random_state = torch.cuda.get_rng_state()
+
+    # # Set the seed
+    # random.seed(seed)
+    # os.environ["PYTHONHASHSEED"] = str(seed)
+    # np.random.seed(seed)
+    # torch.manual_seed(seed)
+    # torch.cuda.manual_seed(seed)
+    # torch.backends.cudnn.deterministic = True
+    # torch.backends.cudnn.benchmark = False
+    # if torch.cuda.is_available():
+    #     torch.cuda.manual_seed_all(seed)
+
+    print("Evaluating the model...")
+    reward_agent: float = evaluate_HIV(agent=agent, nb_episode=5)
+    reward_agent_dr: float = evaluate_HIV_population(agent=agent, nb_episode=20)
+
+    wandb.log({"reward_agent": reward_agent, "episode": i_episode})
+    wandb.log({"reward_agent_dr": reward_agent_dr, "episode": i_episode})
+
+    score = 0
+    if reward_agent > 1e8 :
+        score += 2
+    if reward_agent > 1e9 :
+        score += 1
+    if reward_agent > 1e10 :
+        score += 1
+    if reward_agent > 2e10 :
+        score += 1 
+    if reward_agent > 5e10 :
+        score += 1
+    
+    wandb.log({"score": score, "episode": i_episode})
+    
+    score_dr = 0
+    if reward_agent_dr > 1e10 :
+        score_dr += 1
+    if reward_agent_dr > 2e10 :
+        score_dr += 1 
+    if reward_agent_dr > 5e10 :
+        score_dr += 1
+
+    wandb.log({"score_dr": score, "episode": i_episode})
+    
+    score += score_dr
+
+    # Restore the random states
+    # random.setstate(random_state)
+    # np.random.set_state(np_random_state)
+    # torch.set_rng_state(torch_random_state)
+    # if torch.cuda.is_available():
+    #     torch.cuda.set_rng_state(torch_cuda_random_state)
+    
+    agent.set_epslion(epsilon)
+
+    return score
 
 def main(args):
     print('Hello World!')
     args = get_args()
 
     wandb.init(project="RL-HIV-Training", config=args)
-    
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -151,7 +222,10 @@ def main(args):
     #Init replay buffer and optimizer
     memory = ReplayMemory(args.memory_budget)
     optimizer = optim.AdamW(policy_net.parameters(), lr=args.lr)
-    scheduler = CosineAnnealingLR(optimizer, T_max=args.num_episodes, eta_min=1e-5)
+    if args.scheduler == "StepLR":
+        scheduler = StepLR(optimizer, step_size=350, gamma=0.5)
+    elif args.scheduler == "CosineAnnealing":
+        scheduler = CosineAnnealingLR(optimizer, T_max=args.num_episodes, eta_min=1e-5)
 
     #Init agent
     agent = ProjectAgent()
@@ -169,7 +243,7 @@ def main(args):
 
         rewards = []
         for t in count():
-            agent.set_epslion(args.eps_end + (args.eps_start - args.eps_end) * math.exp(-1. * steps_done / args.eps_decay))
+
             action = agent.act(state)
             steps_done += 1
 
@@ -211,13 +285,30 @@ def main(args):
                 # plot_durations()
                 break
         
-        scheduler.step()
-        wandb.log({"learning_rate": scheduler.get_last_lr()[0], "episode": i_episode})
-
-        average_reward = sum(rewards)/len(rewards)
-        wandb.log({"average_reward": average_reward, "episode": i_episode})
-
+        if args.scheduler is not None:
+            scheduler.step()
+            wandb.log({"learning_rate": scheduler.get_last_lr()[0], "episode": i_episode})
+        
+        if agent.epsilon > args.eps_end:
+            agent.set_epslion(agent.epsilon * args.eps_decay)
         wandb.log({"epsilon": agent.epsilon, "episode": i_episode})
+
+        wandb.log({"reward": reward, "episode": i_episode})
+
+
+        best_score = -1
+        if i_episode > 300 :
+            score = evaluate_model(agent, i_episode)
+            wandb.log({"score": score, "episode": i_episode})
+
+            if score > best_score :
+                best_score = score
+                agent.save(args.path_best)
+                print('Best Model saved at:', args.path_best)
+
+                artifact = wandb.Artifact('best_score_artifact', type='model')
+                artifact.add_file(args.best_path)
+                wandb.log_artifact(artifact)
 
     print('Training Completed!')
     agent.save(args.path)
